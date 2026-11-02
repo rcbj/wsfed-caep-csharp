@@ -19,9 +19,11 @@ Omitted or `true` means on. The resolved configuration leaves `SignalsSet` false
 
 ## Tests
 
-```sh
-dotnet test
+```bash
+docker build --target test .
 ```
+
+The `test` stage runs `dotnet test --nologo` in `mcr.microsoft.com/dotnet/sdk:8.0`. GitHub Actions uses that command. Do not run the .NET SDK on the host. The demo image does not run the suite.
 
 The suite covers the stub IdP (a signed SAML assertion the library accepts), replay, metadata, the self-signed certificate, the SSF poll receiver, the setup script's signals behavior, and the demo handler. No live iya-sts. XML signatures use `System.Security.Cryptography.Xml.SignedXml` with exclusive canonicalization and RSA-SHA256. This tree does not wrap another WS-Federation relying party.
 

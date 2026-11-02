@@ -23,17 +23,26 @@ JSON keys match the Node configuration: `realm`, `replyUrl`, `idpMetadata`, `pri
 `signals` omitted or `true` is on. The resolved configuration omits the key in that case (`SignalsSet` stays false). `false` is kept, does not start a receiver, and does not require transmitter metadata. Sign-in is unchanged either way: WS-Federation does not send OAuth scopes. Any other value raises a config error whose message is `signals must be true or false`.
 
 ```sh
-dotnet run --project src/IyaSec.WsFed.Cli -- generate-keys --config demo/wsfed.json
-dotnet run --project src/IyaSec.WsFed.Cli -- metadata --config demo/wsfed.json
+docker compose build
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD/demo:/app/demo" \
+  wsfed-caep-csharp-demo \
+  wsfed-caep generate-keys --config demo/wsfed.json
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD/demo:/app/demo" \
+  wsfed-caep-csharp-demo \
+  wsfed-caep metadata --config demo/wsfed.json
 ```
 
 The generated certificate's common name defaults to `wsfed-caep-nodejs relying party` plus the realm, cut at 64 characters.
 
 ## Tests
 
-```sh
-dotnet test
+```bash
+docker build --target test .
 ```
+
+The suite runs in a container.
 
 `dotnet test` covers the stub IdP (a signed SAML assertion the library accepts), replay, metadata, the self-signed certificate, the SSF poll receiver, the setup script's signals behavior, and the demo handler. No live iya-sts.
 
@@ -46,5 +55,5 @@ dotnet test
 `PORT` defaults to 3000. Loopback realm and reply URLs follow the running port. Other hosts stay as written. `PUBLIC_URL` or `--public-url` replaces the origin and keeps the path. `GET /healthz` returns `200` and `ok` before the identity provider is dialed. The page links to `/login`, which redirects with `wa=wsignin1.0`, `wtrealm`, `wreply`, and `wctx`. The reply URL handles the POST and sign-out cleanup. `POST /logout` signs out. Demo JSON uses `file:` placeholders and omits `signals`. Do not commit `demo/generated`.
 
 ```sh
-dotnet run --project demo/IyaSec.WsFed.Demo
+docker compose up --build
 ```
