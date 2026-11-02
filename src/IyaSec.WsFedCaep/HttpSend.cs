@@ -3,6 +3,7 @@
 
 using System.Net;
 using System.Net.Security;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -26,11 +27,20 @@ static class HttpSend
 {
     public const int MaxBytes = 2 * 1024 * 1024;
 
+    // Every fetch this library makes comes through here: the identity
+    // provider's federation metadata (its signing keys) and the Shared Signals
+    // transmitter (configuration, JWKS, stream and poll: the SETs and the
+    // bearer token). None of them may travel in the clear off this machine, so
+    // plain http is refused before any DNS lookup or connection unless the host
+    // is loopback. Redirects are not followed (AllowAutoRedirect = false), so
+    // the URL checked here is the only one ever dialled.
     public static HttpResult Send(string url, string? method, IDictionary<string, string>? headers, string? body, TlsMaterial? tls, string code)
     {
         method ??= "GET";
+        RefuseUnsafeCharacters(url, code);
         if (!url.StartsWith("https://", StringComparison.Ordinal) && !url.StartsWith("http://", StringComparison.Ordinal))
             throw new WsFedException(code, url + " is not an http(s) URL");
+        RefusePlainHttpOffLoopback(url, code);
         using var handler = new HttpClientHandler { AllowAutoRedirect = false };
         if (url.StartsWith("https://", StringComparison.Ordinal))
         {
@@ -113,6 +123,51 @@ static class HttpSend
             }
             var type = response.Content.Headers.ContentType?.ToString() ?? "";
             return new HttpResult { Status = (int)response.StatusCode, ContentType = type, Body = System.Text.Encoding.UTF8.GetString(raw.ToArray()) };
+        }
+    }
+
+    // A URL holding whitespace or a control character is refused before it is
+    // parsed, rather than risk two parsers disagreeing on its host. The URL
+    // itself is not repeated: it may carry a secret.
+    internal static void RefuseUnsafeCharacters(string url, string code)
+    {
+        if (url == null) throw new WsFedException(code, "no URL was given");
+        foreach (var ch in url)
+        {
+            if (char.IsWhiteSpace(ch) || char.IsControl(ch))
+                throw new WsFedException(code, "the URL is refused: it contains whitespace or a control character");
+        }
+    }
+
+    // A plain http URL is refused unless it names a loopback host: 127.0.0.0/8,
+    // ::1 or the name localhost, where the bytes never leave the machine. A URL
+    // with userinfo is never loopback, so "http://localhost:80@host/" cannot
+    // pass as localhost. The URL is parsed with System.Uri, as HttpClient will
+    // dial it, and no name is resolved. The message names the scheme and
+    // host[:port] only: never userinfo, path, query or a secret.
+    internal static void RefusePlainHttpOffLoopback(string url, string code)
+    {
+        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) return;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            throw new WsFedException(code, "a plain http URL that cannot be parsed is refused; use https");
+        if (uri.UserInfo.Length == 0 && IsLoopbackHost(uri)) return;
+        var shown = uri.Host + (uri.IsDefaultPort ? "" : ":" + uri.Port);
+        throw new WsFedException(code, "http://" + shown + " is refused: plain http is allowed only to a loopback host (127.0.0.0/8, ::1, localhost); use https");
+    }
+
+    internal static bool IsLoopbackHost(Uri uri)
+    {
+        switch (uri.HostNameType)
+        {
+            case UriHostNameType.Dns:
+                return uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase);
+            case UriHostNameType.IPv4:
+            case UriHostNameType.IPv6:
+                if (!IPAddress.TryParse(uri.Host.Trim('[', ']'), out var address)) return false;
+                if (address.AddressFamily == AddressFamily.InterNetwork) return address.GetAddressBytes()[0] == 127;
+                return address.Equals(IPAddress.IPv6Loopback);
+            default:
+                return false;
         }
     }
 
