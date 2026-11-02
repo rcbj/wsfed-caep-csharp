@@ -5,19 +5,38 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS test
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
 ENV DOTNET_NOLOGO=1
-RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
 RUN dotnet test --nologo
 
-FROM mcr.microsoft.com/dotnet/sdk:8.0
-WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
-COPY . .
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+ENV DOTNET_NOLOGO=1
+WORKDIR /src
+COPY src src
+COPY demo/IyaSec.WsFed.Demo demo/IyaSec.WsFed.Demo
 RUN dotnet publish demo/IyaSec.WsFed.Demo/IyaSec.WsFed.Demo.csproj -c Release -o /opt/demo --nologo \
  && dotnet publish src/IyaSec.WsFed.Cli/IyaSec.WsFed.Cli.csproj -c Release -o /opt/cli --nologo
+
+FROM mcr.microsoft.com/dotnet/runtime:8.0
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=build /opt/demo /opt/demo
+COPY --from=build /opt/cli /opt/cli
+# demo/ comes after the build, so a new trust chain does not rebuild the binaries.
+# .dockerignore admits one file of demo/generated: idp-ca.pem, the iya-sts TLS
+# listener CA trust chain scripts/configure_iya_sts.py writes where idpCa names
+# it. When the file exists this COPY puts it at /app/demo/generated/idp-ca.pem,
+# so the image trusts that iya-sts with no mount and no fetch at start. When it
+# does not (a fresh clone, CI) nothing from demo/generated is copied and the
+# build still succeeds. Keys and metadata never enter the image.
+COPY demo demo
+COPY scripts scripts
+COPY LICENSE README.md VERSION ./
 ENV PATH="/opt/cli:${PATH}"
+ENV DOTNET_ROOT=/usr/share/dotnet
 ENV PORT=3000
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
 EXPOSE 3000
