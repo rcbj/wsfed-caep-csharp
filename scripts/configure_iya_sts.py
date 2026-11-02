@@ -53,7 +53,9 @@ def usage() -> str:
                   their paths (default: unset; $PUBLIC_URL). Without it, a loopback realm and
                   reply URL follow the running demo's PORT, then $PORT. Any other host is left
                   as written.
-  --test-user     The test user to create (default: wsfed-demo-user).
+  --test-user     The test user to create (default: wsfed-demo-user). Its password is
+                  $WSFED_DEMO_USER_PASSWORD, or one is generated and written to
+                  demo/generated/<name>.password (mode 0600); only that path is printed.
   --no-test-user  Do not create a test user.
   --dry-run       Print what would be done, and send nothing.
 
@@ -425,7 +427,7 @@ def main(argv: list[str] | None = None) -> None:
     Path(files["idp_metadata"]).write_text(fetched["body"], encoding="utf-8")
     print(f"Saved the IdP metadata to {files['idp_metadata']}")
     if args["test_user"]:
-        _ensure_user(base, ca, token, args["test_user"], api)
+        _ensure_user(base, ca, token, args["test_user"], api, Path(args["config"]).resolve().parent / "generated")
     print("Done. Build the demo image (it carries the idpCa chain) and start it: docker compose up --build")
 
 
@@ -440,7 +442,34 @@ def _mint(origin: str, base: str, ca: str | None, secret: str) -> str:
     return reply["body"]["access_token"]
 
 
-def _ensure_user(base: str, ca: str | None, token: str, username: str, api) -> None:
+def generated_file(directory, username):
+    """The file a generated test-user password is written to: <directory>/<username>.password.
+
+    Computed apart from the password, and not named for it, so the path the script prints is
+    not derived from it.
+    """
+    if not username or "/" in username or "\\" in username or username in (".", ".."):
+        raise ValueError(f"{username!r} cannot name a file")
+    return Path(directory) / f"{username}.password"
+
+
+def write_private(path, text):
+    """Write text to path, readable and writable by its owner only (0600).
+
+    The file is created 0600, so it is never readable by anyone else, not even for a moment;
+    an existing file is narrowed to 0600 before it is rewritten. A generated password goes
+    here and is never printed: a password does not belong in a log. demo/generated never
+    enters an image.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as out:
+        os.fchmod(out.fileno(), 0o600)
+        out.write(text + "\n")
+
+
+def _ensure_user(base: str, ca: str | None, token: str, username: str, api, generated: Path) -> None:
     found = _json(f"{base}/admin-api/users?user={urllib.parse.quote(username)}", ca, headers={"accept": "application/json", "authorization": f"Bearer {token}"})
     password = os.environ.get("WSFED_DEMO_USER_PASSWORD") or ""
     if found["body"].get("known") is True and password:
@@ -458,7 +487,11 @@ def _ensure_user(base: str, ca: str | None, token: str, username: str, api) -> N
             raise RuntimeError(f"creating {username} was refused: {json.dumps(made['body'])[:300]}")
         print(f"Created user {username}.")
         if made["body"].get("password"):
-            print(f"Generated password for {username} (shown once): {made['body']['password']}")
+            # A generated password is never printed: it goes to a 0600 file, and only the
+            # path, which is computed apart from it, is shown.
+            saved = generated_file(generated, username)
+            write_private(saved, made["body"]["password"])
+            print(f"Generated a password for {username}; it is in {saved} (readable by you only).")
 
 
 if __name__ == "__main__":
