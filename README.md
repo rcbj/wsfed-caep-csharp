@@ -44,13 +44,13 @@ docker build --target test .
 
 The suite runs in a container.
 
-`dotnet test` covers the stub IdP (a signed SAML assertion the library accepts), replay, metadata, the self-signed certificate, the SSF poll receiver, the setup script's signals behavior, the setup script writing the whole trust chain where `idpCa` points, the library taking that file as its trust store (and refusing a chain from another root), the demo handler, and `GET /live-status`. No live iya-sts.
+`dotnet test` covers the stub IdP (a signed SAML assertion the library accepts), replay, metadata, the self-signed certificate, the SSF poll receiver, the setup script's signals behavior, the setup script writing the whole trust chain where `idpCa` points, the library taking that file as its trust store (and refusing a chain from another root, or a certificate that chains to it but names another host), the demo handler, and `GET /live-status`. No live iya-sts.
 
 ## The iya-sts TLS trust chain (`idpCa`)
 
 `idpCa` names the file that holds the iya-sts TLS listener CA trust chain; the demo's is `generated/idp-ca.pem` (relative to `demo/`). `scripts/configure_iya_sts.py`, the install script, writes it on every run: the whole chain iya-sts publishes at `GET /tls/server-certificate` (leaf, TLS issuing CA, intermediate, root), or the chain the TLS handshake presents when that path is missing. It prints the path, the trust anchor's subject and its SHA-256 fingerprint. `scripts/trust_chain.py --config demo/wsfed.json --idp https://host:port` refreshes the file by itself.
 
-The library reads every certificate in that file. The self-signed ones are the trust anchors and the others are intermediates the server's chain may be built through; a file with no self-signed certificate trusts every certificate in it, as a one-certificate file always did. The metadata fetch and the Shared Signals receiver both use it.
+The library reads every certificate in that file. The self-signed ones are the trust anchors and the others are intermediates the server's chain may be built through; a file with no self-signed certificate trusts every certificate in it, as a one-certificate file always did. The metadata fetch and the Shared Signals receiver both use it. The server's certificate must also name the host in the URL: a DNS name must match a DNS SAN and an IP literal such as `127.0.0.1` an IP address SAN. A certificate that chains to the file but names another host is refused.
 
 The demo image carries the file from build time: the Dockerfile copies `demo/` after the build, and `.dockerignore` admits only `demo/generated/idp-ca.pem` from `demo/generated` (no keys, no metadata). A build before the install script has run (a fresh clone, CI's `--target test`) copies nothing from `demo/generated` and still succeeds. Run the install script, then build the demo image; after running it against a different iya-sts, rebuild.
 

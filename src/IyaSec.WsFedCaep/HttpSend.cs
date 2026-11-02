@@ -52,7 +52,8 @@ static class HttpSend
             if (ca != null)
             {
                 var trusted = ca;
-                handler.ServerCertificateCustomValidationCallback = (_, cert, _, _) => Trusted(cert, trusted);
+                var host = HostOf(url);
+                handler.ServerCertificateCustomValidationCallback = (_, cert, _, errors) => Accept(cert, errors, trusted, host);
             }
         }
         using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
@@ -130,6 +131,36 @@ static class HttpSend
     }
 
     static bool SelfSigned(X509Certificate2 cert) => cert.SubjectName.RawData.AsSpan().SequenceEqual(cert.IssuerName.RawData);
+
+    // The callback replaces the platform's whole decision, the name check
+    // included, so it makes that check itself: a certificate that chains to the
+    // configured anchors but names another host is refused. An IP literal must
+    // match an IP address SAN.
+    internal static bool Accept(X509Certificate? cert, SslPolicyErrors errors, X509Certificate2Collection ca, string host)
+    {
+        if (cert == null) return false;
+        if ((errors & SslPolicyErrors.RemoteCertificateNameMismatch) != 0) return false;
+        if ((errors & SslPolicyErrors.RemoteCertificateNotAvailable) != 0) return false;
+        using (var leaf = new X509Certificate2(cert))
+        {
+            if (!NameMatches(leaf, host)) return false;
+        }
+        return Trusted(cert, ca);
+    }
+
+    internal static string HostOf(string url)
+    {
+        var host = new Uri(url).IdnHost;
+        if (host.StartsWith('[') && host.EndsWith(']')) host = host[1..^1];
+        return host;
+    }
+
+    internal static bool NameMatches(X509Certificate2 leaf, string host)
+    {
+        if (string.IsNullOrEmpty(host)) return false;
+        try { return leaf.MatchesHostname(host, allowWildcards: true, allowCommonName: false); }
+        catch { return false; }
+    }
 
     internal static bool Trusted(X509Certificate? cert, X509Certificate2Collection ca)
     {

@@ -28,7 +28,7 @@ public class TrustChainTests
         public string LeafKeyPem = "";
     }
 
-    static Chain MakeChain(string name)
+    static Chain MakeChain(string name, Action<SubjectAlternativeNameBuilder>? names = null)
     {
         var now = DateTimeOffset.UtcNow;
         X509Certificate2 Ca(string cn, X509Certificate2? issuer, RSA key)
@@ -54,7 +54,8 @@ public class TrustChainTests
         var leafKey = RSA.Create(2048);
         var leafReq = new CertificateRequest("CN=127.0.0.1", leafKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var san = new SubjectAlternativeNameBuilder();
-        san.AddIpAddress(IPAddress.Loopback);
+        if (names == null) san.AddIpAddress(IPAddress.Loopback);
+        else names(san);
         leafReq.CertificateExtensions.Add(san.Build());
         leafReq.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
         leafReq.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") }, false));
@@ -119,14 +120,14 @@ public class TrustChainTests
         _ => ("", "Not found"),
     };
 
-    static string ConfigFile(string dir, int port, string idpCa)
+    static string ConfigFile(string dir, int port, string idpCa, string host = "127.0.0.1")
     {
         var path = Path.Combine(dir, "wsfed-https.json");
         File.WriteAllText(path, JsonSerializer.Serialize(new Dictionary<string, object?>
         {
             ["realm"] = "https://rp.test/",
             ["replyUrl"] = "https://rp.test/wsfed",
-            ["idpMetadata"] = "https://127.0.0.1:" + port + "/wsfed/metadata",
+            ["idpMetadata"] = "https://" + host + ":" + port + "/wsfed/metadata",
             ["idpCa"] = idpCa,
         }));
         return path;
@@ -162,6 +163,67 @@ public class TrustChainTests
             Assert.Equal("metadata", err.Code);
         }
         finally { dir.Delete(true); }
+    }
+
+    // The names an iya-sts TLS listener certificate carries.
+    static void IyaStsNames(SubjectAlternativeNameBuilder san)
+    {
+        san.AddDnsName("localhost");
+        san.AddDnsName("sts");
+        san.AddDnsName("sts-mock");
+        san.AddDnsName("sts.example.com");
+        san.AddIpAddress(IPAddress.Loopback);
+    }
+
+    static Exception? Fetch(Chain chain, string host)
+    {
+        using var server = new TlsServer(chain.Leaf, path => Answer(path, chain));
+        var dir = Directory.CreateTempSubdirectory("wsfed-name-");
+        try
+        {
+            File.WriteAllText(Path.Combine(dir.FullName, "idp-ca.pem"), chain.Pem);
+            var party = RelyingParty.FromFile(ConfigFile(dir.FullName, server.Port, "idp-ca.pem", host), null);
+            Assert.Equal(StubIdp.IdPEntity, party.Idp?.EntityId);
+            return null;
+        }
+        catch (WsFedException err) { return err; }
+        finally { dir.Delete(true); }
+    }
+
+    // The chain is good; the name is not. The custom callback replaces the
+    // platform's decision, name check included, so it has to refuse this itself.
+    [Fact]
+    public void AListenerNamingAnotherHostIsRefusedThoughItChainsToTheAnchor()
+    {
+        var chain = MakeChain("sts", san => san.AddDnsName("other.example.com"));
+        var err = Fetch(chain, "localhost");
+        Assert.NotNull(err);
+        Assert.Equal("metadata", ((WsFedException)err!).Code);
+    }
+
+    [Fact]
+    public void AnIpLiteralMustMatchAnIpAddressSan()
+    {
+        var chain = MakeChain("sts", san => san.AddDnsName("localhost"));
+        var err = Fetch(chain, "127.0.0.1");
+        Assert.NotNull(err);
+        Assert.Equal("metadata", ((WsFedException)err!).Code);
+    }
+
+    [Fact]
+    public void TheIyaStsListenerIsAcceptedByItsDnsNameAndByItsIpAddress()
+    {
+        var chain = MakeChain("sts", IyaStsNames);
+        Assert.Null(Fetch(chain, "localhost"));
+        Assert.Null(Fetch(chain, "127.0.0.1"));
+    }
+
+    [Fact]
+    public void TheIyaStsListenerIsRefusedUnderANameItDoesNotCarry()
+    {
+        var chain = MakeChain("sts", san => { san.AddDnsName("sts.example.com"); san.AddIpAddress(IPAddress.Parse("10.9.8.7")); });
+        Assert.NotNull(Fetch(chain, "localhost"));
+        Assert.NotNull(Fetch(chain, "127.0.0.1"));
     }
 
     [Fact]
