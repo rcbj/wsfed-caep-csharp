@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # wsfed-caep
 
-C# port of the server-side WS-Federation relying party. Package `IyaSec.WsFedCaep`, namespace `IyaSec.WsFed`, target `net8.0`. Version 0.1.0. License MIT (`LICENSE`). A pull request merged into `main` publishes the package to nuget.org after the test workflow succeeds on that commit. A direct push does not. The key comes from nuget.org Trusted Publishing (`NuGet/login` trades the workflow's GitHub OIDC token for a one-hour API key); the `NUGET_USER` repository secret is the nuget.org profile name that owns the policy for this repository and `publish.yml`. A version already on nuget.org stays there; the next release is a new `Version` in the library's `.csproj`. When this tree is published, `develop` and `main` are the same commit.
+C# port of the server-side WS-Federation relying party. Package `IyaSec.WsFedCaep`, namespace `IyaSec.WsFed`, target `net8.0`. Version 0.1.1. License MIT (`LICENSE`). A pull request merged into `main` publishes the package to nuget.org after the test workflow succeeds on that commit. A direct push does not. The key comes from nuget.org Trusted Publishing (`NuGet/login` trades the workflow's GitHub OIDC token for a one-hour API key); the `NUGET_USER` repository secret is the nuget.org profile name that owns the policy for this repository and `publish.yml`. A version already on nuget.org stays there; the next release is a new `Version` in the library's `.csproj`. When this tree is published, `develop` and `main` are the same commit.
 
 ## Usage
 
