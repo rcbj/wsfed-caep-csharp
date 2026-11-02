@@ -5,6 +5,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.Json;
 
 namespace IyaSec.WsFed.Demo;
 
@@ -15,6 +16,8 @@ public sealed class HeaderField
     public HeaderField(string name, string value) { Name = name; Value = value; }
 }
 
+// GET /live-status is JSON: signedIn, subject, receiver, and the accepted Shared
+// Signals events (type and jti). It never includes tokens or assertions.
 public sealed class App
 {
     public const string Styles =
@@ -28,6 +31,8 @@ public sealed class App
     public RelyingParty Party { get; }
     public SignalsReceiver? Receiver { get; set; }
     readonly Dictionary<string, Login> _sessions = new();
+    readonly List<(string Type, string Jti)> _events = new();
+    string _receiverState = "not configured";
     readonly byte[] _secret = RandomNumberGenerator.GetBytes(32);
     readonly string _replyPath;
     readonly string _secure;
@@ -83,6 +88,50 @@ public sealed class App
 
     public void Drop(string id) { lock (_sessions) _sessions.Remove(id); }
 
+    /// <summary>What GET /live-status reports as receiver.</summary>
+    public void SetReceiverState(string state) { lock (_sessions) _receiverState = state; }
+
+    /// <summary>Records an accepted Shared Signals event for GET /live-status.</summary>
+    public void Remember(SignalEvent evt)
+    {
+        List<string> ended = new();
+        lock (_sessions)
+        {
+            _events.Add((evt.Type, evt.Jti));
+            // iya-sts main sets the WS-Federation assertion's SessionIndex to the
+            // assertion id. The CAEP session-revoked subject names the sign-on
+            // session instead, so the index finds nobody and the end callback is
+            // not asked to drop this login. This demo has that one session.
+            if (evt.Type == Events.Catalog["session_revoked"] && evt.Sessions.Count == 0)
+            {
+                ended.AddRange(_sessions.Keys);
+                _sessions.Clear();
+            }
+        }
+        foreach (var id in ended) Receiver?.Untrack(id);
+    }
+
+    (int, List<HeaderField>, byte[]) LiveStatus(string sid)
+    {
+        Login? who = null;
+        List<Dictionary<string, string>> events;
+        string state;
+        lock (_sessions)
+        {
+            if (sid != "") _sessions.TryGetValue(sid, out who);
+            events = _events.Select(item => new Dictionary<string, string> { ["type"] = item.Type, ["jti"] = item.Jti }).ToList();
+            state = _receiverState;
+        }
+        var body = JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object?>
+        {
+            ["signedIn"] = who != null,
+            ["subject"] = who?.NameId,
+            ["receiver"] = state,
+            ["events"] = events,
+        });
+        return (200, new List<HeaderField> { new("content-type", "application/json"), new("cache-control", "no-store") }, body);
+    }
+
     string Pending(string value, int age)
     {
         var secure = _secure == "" ? "; Secure" : _secure;
@@ -102,6 +151,8 @@ public sealed class App
         method = method.ToUpperInvariant();
         if (path == "/healthz" && method == "GET")
             return (200, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes("ok"));
+        if (path == "/live-status" && method == "GET")
+            return LiveStatus(sid);
         if (path == "/login" && method == "GET")
         {
             try
@@ -325,9 +376,14 @@ public static class DemoHost
                 if (holder != null) return holder;
                 var (party, raw) = LoadParty(path, port, publicUrl, given);
                 var app = new App(party, null);
+                var ssfBlock = raw.GetValueOrDefault("ssf") as Dictionary<string, object?>;
+                var transmitterOf = ssfBlock?.GetValueOrDefault("transmitter") as string ?? "";
+                if (raw.GetValueOrDefault("signals") is false) app.SetReceiverState("not configured (signals are off)");
+                else if (transmitterOf == "") app.SetReceiverState("not configured (no ssf block in the configuration file)");
+                else if (party.Config.PrivateKey == null) app.SetReceiverState("not running: the relying party has no private key");
                 if (raw.GetValueOrDefault("signals") is not false)
                 {
-                    if (raw.GetValueOrDefault("ssf") is Dictionary<string, object?> ssf && ssf.GetValueOrDefault("transmitter") is string transmitter && transmitter != "" && party.Config.PrivateKey != null)
+                    if (ssfBlock is Dictionary<string, object?> ssf && ssf.GetValueOrDefault("transmitter") is string transmitter && transmitter != "" && party.Config.PrivateKey != null)
                     {
                         var interval = 5000;
                         if (ssf.GetValueOrDefault("pollIntervalMs") is long n && n > 0) interval = (int)n;
@@ -343,10 +399,22 @@ public static class DemoHost
                             {
                                 foreach (var id in ids) app.Drop(id);
                             }, opts);
-                            receiver.Start();
+                            receiver.On("*", app.Remember);
                             app.Receiver = receiver;
+                            try { receiver.Start(); }
+                            catch
+                            {
+                                app.Receiver = null;
+                                throw;
+                            }
+                            var streamId = receiver.Stream?.GetValueOrDefault("stream_id") as string ?? "";
+                            app.SetReceiverState("polling stream " + streamId + " at " + transmitter);
                         }
-                        catch (Exception ex) { Console.WriteLine("ssf: not started: " + ex.Message); }
+                        catch (Exception ex)
+                        {
+                            app.SetReceiverState("not running: " + ex.Message);
+                            Console.WriteLine("ssf: not started: " + ex.Message);
+                        }
                     }
                 }
                 holder = app;
