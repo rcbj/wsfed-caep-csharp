@@ -11,7 +11,20 @@ SPDX-License-Identifier: MIT
     <AssemblyName>IyaSec.WsFedCaep</AssemblyName>
     <Version>0.1.0</Version>
     <Description>WS-Federation relying party</Description>
+    <PackageId>IyaSec.WsFedCaep</PackageId>
+    <IsPackable>true</IsPackable>
+    <Authors>Iya CyberSecurity Solutions, LLC</Authors>
+    <Copyright>2026 Iya CyberSecurity Solutions, LLC</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/rcbj/wsfed-caep-csharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/rcbj/wsfed-caep-csharp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>ws-federation;wsfed;caep;risc;ssf</PackageTags>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="System.Security.Cryptography.Xml" Version="9.0.22" />
   </ItemGroup>
