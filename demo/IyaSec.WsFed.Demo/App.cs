@@ -138,6 +138,34 @@ public sealed class App
         return "wsfed_pending=" + value + "; Path=" + _replyPath + "; HttpOnly; SameSite=None" + secure + "; Max-Age=" + age;
     }
 
+    // One request, as the handlers below see it.
+    sealed record Req(string Method, string Target, Dictionary<string, string> Jar, string Sid, byte[] Body);
+
+    // The handlers, keyed by "METHOD /path" ("* /path" for any method). A table lookup picks the
+    // handler, so no handler is guarded by comparing the request's own path or method string in this
+    // code (CodeQL cs/user-controlled-bypass).
+    Dictionary<string, Func<Req, (int, List<HeaderField>, byte[])>>? _routes;
+
+    Dictionary<string, Func<Req, (int, List<HeaderField>, byte[])>> Routes()
+    {
+        if (_routes != null) return _routes;
+        var routes = new Dictionary<string, Func<Req, (int, List<HeaderField>, byte[])>>
+        {
+            ["GET /healthz"] = _ => (200, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes("ok")),
+            ["GET /live-status"] = req => LiveStatus(req.Sid),
+            ["GET /login"] = StartLogin,
+            ["POST /logout"] = EndSession,
+            ["GET /FederationMetadata/2007-06/FederationMetadata.xml"] = _ => (200, new List<HeaderField> { new("content-type", "application/samlmetadata+xml") }, Encoding.UTF8.GetBytes(Party.MetadataXml())),
+            ["GET /"] = HomePage,
+            ["GET /styles.css"] = _ => (200, new List<HeaderField> { new("content-type", "text/css") }, Encoding.UTF8.GetBytes(Styles)),
+        };
+        // The reply path takes the sign-in response (POST) and wsignoutcleanup1 (any method).
+        routes["POST " + _replyPath] = req => SignOutCleanup(req) ?? Reply(req);
+        routes["* " + _replyPath] = req => SignOutCleanup(req) ?? NotFound(req);
+        _routes = routes;
+        return routes;
+    }
+
     public (int status, List<HeaderField> headers, byte[] body) Handle(string method, string target, IDictionary<string, string> headers, byte[] body)
     {
         var path = target;
@@ -149,98 +177,110 @@ public sealed class App
         jar.TryGetValue("sid", out var sidCookie);
         var sid = Unsign(_secret, sidCookie ?? "");
         method = method.ToUpperInvariant();
-        if (path == "/healthz" && method == "GET")
-            return (200, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes("ok"));
-        if (path == "/live-status" && method == "GET")
-            return LiveStatus(sid);
-        if (path == "/login" && method == "GET")
+        var req = new Req(method, target, jar, sid, body);
+        var table = Routes();
+        var handler = table.GetValueOrDefault(method + " " + path) ?? table.GetValueOrDefault("* " + path) ?? NotFound;
+        return handler(req);
+    }
+
+    static (int, List<HeaderField>, byte[]) NotFound(Req req) =>
+        (404, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes("Not found"));
+
+    // An exception's message stays in the log: it can carry configuration and server details (CodeQL
+    // cs/information-exposure-through-exception).
+    static (int, List<HeaderField>, byte[]) Failed(string where, Exception ex)
+    {
+        Console.Error.WriteLine("demo: " + where + ": " + ex);
+        return (500, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes(where + " failed; the reason is in the demo's log."));
+    }
+
+    (int, List<HeaderField>, byte[]) StartLogin(Req req)
+    {
+        try
         {
-            try
+            var request = Party.Login(new LoginOptions { RelayState = "/" });
+            return (302, new List<HeaderField>
             {
-                var request = Party.Login(new LoginOptions { RelayState = "/" });
-                return (302, new List<HeaderField>
-                {
-                    new("location", request.Url),
-                    new("set-cookie", Pending(Sign(_secret, request.Id), 600)),
-                }, Array.Empty<byte>());
-            }
-            catch (Exception ex)
-            {
-                return (500, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes(ex.Message));
-            }
-        }
-        if (path == _replyPath && Party.IsSignOutCleanup(new ReplyRequest { Method = method, Url = target }))
-        {
-            if (sid != "")
-            {
-                Drop(sid);
-                Receiver?.Untrack(sid);
-            }
-            return (200, new List<HeaderField>
-            {
-                new("content-type", "image/gif"),
-                new("set-cookie", "sid=; Path=/; HttpOnly; Max-Age=0" + _secure),
-            }, Gif);
-        }
-        if (path == _replyPath && method == "POST")
-        {
-            jar.TryGetValue("wsfed_pending", out var pendingCookie);
-            var pending = Unsign(_secret, pendingCookie ?? "");
-            IReadOnlyList<string>? ids = pending == "" ? null : new[] { pending };
-            Login who;
-            try { who = Party.HandleReply(new ReplyRequest { Method = "POST", Url = target, Body = Encoding.UTF8.GetString(body) }, ids); }
-            catch { return (400, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes("Sign-in failed.")); }
-            var sessionId = B64(RandomNumberGenerator.GetBytes(24));
-            lock (_sessions) _sessions[sessionId] = who;
-            Receiver?.Track(sessionId, who);
-            var next = "/";
-            if (who.RelayState != null && who.RelayState.StartsWith('/') && !who.RelayState.StartsWith("//")) next = who.RelayState;
-            return (303, new List<HeaderField>
-            {
-                new("location", next),
-                new("set-cookie", Pending("", 0)),
-                new("set-cookie", "sid=" + Sign(_secret, sessionId) + "; Path=/; HttpOnly; SameSite=Lax" + _secure),
+                new("location", request.Url),
+                new("set-cookie", Pending(Sign(_secret, request.Id), 600)),
             }, Array.Empty<byte>());
         }
-        if (path == "/logout" && method == "POST")
+        catch (Exception ex)
         {
-            if (sid != "")
-            {
-                Drop(sid);
-                Receiver?.Untrack(sid);
-            }
-            var origin = "/";
-            if (Uri.TryCreate(Party.Config.ReplyUrl, UriKind.Absolute, out var reply))
-                origin = reply.Scheme + "://" + reply.Authority + "/";
-            try
-            {
-                var location = Party.Logout(origin);
-                return (303, new List<HeaderField>
-                {
-                    new("location", location),
-                    new("set-cookie", "sid=; Path=/; HttpOnly; Max-Age=0" + _secure),
-                }, Array.Empty<byte>());
-            }
-            catch (Exception ex)
-            {
-                return (500, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes(ex.Message));
-            }
+            return Failed("sign-in", ex);
         }
-        if (path == "/FederationMetadata/2007-06/FederationMetadata.xml" && method == "GET")
-            return (200, new List<HeaderField> { new("content-type", "application/samlmetadata+xml") }, Encoding.UTF8.GetBytes(Party.MetadataXml()));
-        if (path == "/" && method == "GET")
+    }
+
+    (int, List<HeaderField>, byte[])? SignOutCleanup(Req req)
+    {
+        if (!Party.IsSignOutCleanup(new ReplyRequest { Method = req.Method, Url = req.Target })) return null;
+        if (req.Sid != "")
         {
-            Login? who = null;
-            if (sid != "") { lock (_sessions) _sessions.TryGetValue(sid, out who); }
-            var page = "<p><a href=\"/login\">Sign in with WS-Federation</a></p>";
-            if (who != null)
-                page = "<p>Signed in as <strong>" + Esc(who.NameId) + "</strong> by " + Esc(who.Issuer) + ".</p><form method=\"post\" action=\"/logout\"><button>Sign out</button></form>";
-            var html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>WS-Federation</title><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>" + page + "</main></body></html>";
-            return (200, new List<HeaderField> { new("content-type", "text/html; charset=utf-8") }, Encoding.UTF8.GetBytes(html));
+            Drop(req.Sid);
+            Receiver?.Untrack(req.Sid);
         }
-        if (path == "/styles.css" && method == "GET")
-            return (200, new List<HeaderField> { new("content-type", "text/css") }, Encoding.UTF8.GetBytes(Styles));
-        return (404, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes("Not found"));
+        return (200, new List<HeaderField>
+        {
+            new("content-type", "image/gif"),
+            new("set-cookie", "sid=; Path=/; HttpOnly; Max-Age=0" + _secure),
+        }, Gif);
+    }
+
+    (int, List<HeaderField>, byte[]) Reply(Req req)
+    {
+        req.Jar.TryGetValue("wsfed_pending", out var pendingCookie);
+        var pending = Unsign(_secret, pendingCookie ?? "");
+        IReadOnlyList<string>? ids = pending == "" ? null : new[] { pending };
+        Login who;
+        try { who = Party.HandleReply(new ReplyRequest { Method = "POST", Url = req.Target, Body = Encoding.UTF8.GetString(req.Body) }, ids); }
+        catch { return (400, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes("Sign-in failed.")); }
+        var sessionId = B64(RandomNumberGenerator.GetBytes(24));
+        lock (_sessions) _sessions[sessionId] = who;
+        Receiver?.Track(sessionId, who);
+        var next = "/";
+        if (who.RelayState != null && who.RelayState.StartsWith('/') && !who.RelayState.StartsWith("//")) next = who.RelayState;
+        return (303, new List<HeaderField>
+        {
+            new("location", next),
+            new("set-cookie", Pending("", 0)),
+            new("set-cookie", "sid=" + Sign(_secret, sessionId) + "; Path=/; HttpOnly; SameSite=Lax" + _secure),
+        }, Array.Empty<byte>());
+    }
+
+    (int, List<HeaderField>, byte[]) EndSession(Req req)
+    {
+        if (req.Sid != "")
+        {
+            Drop(req.Sid);
+            Receiver?.Untrack(req.Sid);
+        }
+        var origin = "/";
+        if (Uri.TryCreate(Party.Config.ReplyUrl, UriKind.Absolute, out var reply))
+            origin = reply.Scheme + "://" + reply.Authority + "/";
+        try
+        {
+            var location = Party.Logout(origin);
+            return (303, new List<HeaderField>
+            {
+                new("location", location),
+                new("set-cookie", "sid=; Path=/; HttpOnly; Max-Age=0" + _secure),
+            }, Array.Empty<byte>());
+        }
+        catch (Exception ex)
+        {
+            return Failed("sign-out", ex);
+        }
+    }
+
+    (int, List<HeaderField>, byte[]) HomePage(Req req)
+    {
+        Login? who = null;
+        if (req.Sid != "") { lock (_sessions) _sessions.TryGetValue(req.Sid, out who); }
+        var page = "<p><a href=\"/login\">Sign in with WS-Federation</a></p>";
+        if (who != null)
+            page = "<p>Signed in as <strong>" + Esc(who.NameId) + "</strong> by " + Esc(who.Issuer) + ".</p><form method=\"post\" action=\"/logout\"><button>Sign out</button></form>";
+        var html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>WS-Federation</title><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>" + page + "</main></body></html>";
+        return (200, new List<HeaderField> { new("content-type", "text/html; charset=utf-8") }, Encoding.UTF8.GetBytes(html));
     }
 }
 
@@ -269,11 +309,15 @@ public static class DemoHost
             if (holder == null && failed == null)
             {
                 try { holder = getApp(); }
-                catch (Exception ex) { failed = ex; }
+                catch (Exception ex)
+                {
+                    failed = ex;
+                    Console.Error.WriteLine("demo: not ready: " + ex);
+                }
             }
             if (holder == null)
             {
-                Write(ctx, 503, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes("not ready: " + (failed?.Message ?? "unavailable") + "\n"));
+                Write(ctx, 503, new List<HeaderField> { new("content-type", "text/plain") }, Encoding.UTF8.GetBytes("not ready; the reason is in the demo's log\n"));
                 continue;
             }
             using var raw = new MemoryStream();
@@ -412,7 +456,7 @@ public static class DemoHost
                         }
                         catch (Exception ex)
                         {
-                            app.SetReceiverState("not running: " + ex.Message);
+                            app.SetReceiverState("not running; the reason is in the demo's log");
                             Console.WriteLine("ssf: not started: " + ex.Message);
                         }
                     }
