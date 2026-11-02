@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # wsfed-caep
 
-C# port of the server-side WS-Federation relying party. Package `IyaSec.WsFedCaep`, namespace `IyaSec.WsFed`, target `net8.0`. Version 0.1.2. License MIT (`LICENSE`). A pull request merged into `main` publishes the package to nuget.org after the test workflow succeeds on that commit. A direct push does not. The key comes from nuget.org Trusted Publishing (`NuGet/login` trades the workflow's GitHub OIDC token for a one-hour API key); the `NUGET_USER` repository secret is the nuget.org profile name that owns the policy for this repository and `publish.yml`. A version already on nuget.org stays there; the next release is a new `Version` in the library's `.csproj`. When this tree is published, `develop` and `main` are the same commit.
+C# port of the server-side WS-Federation relying party. Package `IyaSec.WsFedCaep`, namespace `IyaSec.WsFed`, target `net8.0`. Version 0.1.3. License MIT (`LICENSE`). A pull request merged into `main` publishes the package to nuget.org after the test workflow succeeds on that commit. A direct push does not. The key comes from nuget.org Trusted Publishing (`NuGet/login` trades the workflow's GitHub OIDC token for a one-hour API key); the `NUGET_USER` repository secret is the nuget.org profile name that owns the policy for this repository and `publish.yml`. A version already on nuget.org stays there; the next release is a new `Version` in the library's `.csproj`. When this tree is published, `develop` and `main` are the same commit.
 
 ## Usage
 
@@ -16,6 +16,8 @@ The party accepts SAML 2.0 assertions with bearer confirmation `urn:oasis:names:
 ## signals
 
 Omitted or `true` means on. The resolved configuration leaves `SignalsSet` false in that case, which is the omitted key. `false` sets `SignalsSet` and `Signals` false. It does not start the receiver and does not require transmitter metadata. The relying party never starts the receiver itself; `SignalsReceiver` is separate. `Stop` waits until the background poll loop has finished. Sign-in does not change when signals are off, because WS-Federation does not send OAuth scopes. A non-boolean raises a config error: `signals must be true or false`. The shipped demo omits the key.
+
+**Plain http (#18).** `HttpSend.Send` is the one place every fetch goes through (metadata URL, SSF configuration, JWKS, stream and poll). `RefusePlainHttpOffLoopback` parses with `System.Uri`, as `HttpClient` dials, and refuses plain `http://` to a host that is not loopback (`127.0.0.0/8`, `::1`, `localhost`) before connecting, without resolving a name, naming only the scheme and host[:port]; userinfo is never loopback, and `RefuseUnsafeCharacters` refuses whitespace and control characters first. Redirects are not followed (`AllowAutoRedirect = false`), so the checked URL is the only one dialled. No opt-out. `PlainHttpTests` covers it; `http://0.0.0.0:<port>` reaches a 127.0.0.1 listener on Linux, so an empty backlog proves no connection was opened.
 
 ## Tests
 
@@ -30,6 +32,8 @@ The suite covers the stub IdP (a signed SAML assertion the library accepts), rep
 ### idpCa: the iya-sts TLS listener CA trust chain
 
 `idpCa` (demo: `generated/idp-ca.pem`, relative to `demo/`) is the whole chain, not one certificate. `scripts/configure_iya_sts.py` writes it on every run through `save_trust_chain()` in `scripts/trust_chain.py` (`GET /tls/server-certificate`, else the handshake chain) and prints the path, the anchor's subject and SHA-256. `HttpSend.TrustStore` reads every PEM block; self-signed certificates go in the `CustomTrustStore`, the rest in the `ExtraStore`; no self-signed certificate means every one is an anchor. `HttpSend.Accept` also checks the name, because the custom callback replaces the platform's whole decision: a `RemoteCertificateNameMismatch`, or a host `MatchesHostname` rejects (no common-name fallback; an IP literal needs an IP SAN), is refused even when the chain builds. The demo Dockerfile copies `demo/` after the publish step and `.dockerignore` admits only `demo/generated/idp-ca.pem`, so the image carries the chain from build time and a build without it still succeeds. Rebuild after re-running the install script against a different iya-sts.
+
+The install script never prints a generated test-user password: it writes it to `demo/generated/<user>.password` (created mode 0600) and prints only that path. No line it or the live script prints carries anything derived from a password or secret.
 
 ### Live sign-in and nightly
 

@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT
 
 Server-side WS-Federation relying party for C#. It accepts SAML 2.0 bearer assertions, reads identity-provider federation metadata, writes relying-party metadata, verifies XML signatures, decrypts encrypted assertions, and remembers assertion ids so a bearer token cannot be replayed. A Shared Signals poll receiver for CAEP and RISC is included. The relying party does not start that receiver.
 
-Version 0.1.2. License: MIT. Package `IyaSec.WsFedCaep`, namespace `IyaSec.WsFed`, `net8.0`. A pull request merged into `main` publishes the package to nuget.org after the test workflow succeeds on that commit. A direct push does not. The key comes from nuget.org Trusted Publishing (`NuGet/login` trades the workflow's GitHub OIDC token for a one-hour API key); the `NUGET_USER` repository secret is the nuget.org profile name that owns the policy for this repository and `publish.yml`. A version already on nuget.org stays there; the next release is a new `Version` in the library's `.csproj`. `develop` and `main` are the same commit when this tree is published; nothing here creates a remote.
+Version 0.1.3. License: MIT. Package `IyaSec.WsFedCaep`, namespace `IyaSec.WsFed`, `net8.0`. A pull request merged into `main` publishes the package to nuget.org after the test workflow succeeds on that commit. A direct push does not. The key comes from nuget.org Trusted Publishing (`NuGet/login` trades the workflow's GitHub OIDC token for a one-hour API key); the `NUGET_USER` repository secret is the nuget.org profile name that owns the policy for this repository and `publish.yml`. A version already on nuget.org stays there; the next release is a new `Version` in the library's `.csproj`. `develop` and `main` are the same commit when this tree is published; nothing here creates a remote.
 
 ## Usage
 
@@ -36,6 +36,8 @@ docker run --rm --user "$(id -u):$(id -g)" \
 
 The generated certificate's common name defaults to `wsfed-caep-nodejs relying party` plus the realm, cut at 64 characters.
 
+**Plain http.** Federation metadata from a URL and every Shared Signals transmitter call (configuration, JWKS, stream, poll) use https. A plain `http://` URL is refused before any connection unless its host is loopback (`127.0.0.0/8`, `::1`, `localhost`), because metadata carries the signing keys and Shared Signals carry SETs and the bearer token. Redirects are not followed. A URL with userinfo is never loopback, and a URL holding whitespace or a control character is refused. The `WsFedException` keeps the fetch's code (`metadata`, `ssf`) and its message names the scheme and host only. There is no opt-out. The relying party's own realm and reply URL may stay http: they are never fetched.
+
 ## Tests
 
 ```bash
@@ -49,6 +51,8 @@ The suite runs in a container.
 ## The iya-sts TLS trust chain (`idpCa`)
 
 `idpCa` names the file that holds the iya-sts TLS listener CA trust chain; the demo's is `generated/idp-ca.pem` (relative to `demo/`). `scripts/configure_iya_sts.py`, the install script, writes it on every run: the whole chain iya-sts publishes at `GET /tls/server-certificate` (leaf, TLS issuing CA, intermediate, root), or the chain the TLS handshake presents when that path is missing. It prints the path, the trust anchor's subject and its SHA-256 fingerprint. `scripts/trust_chain.py --config demo/wsfed.json --idp https://host:port` refreshes the file by itself.
+
+The install script never prints a generated test-user password: it writes it to `demo/generated/<user>.password` (created mode 0600) and prints only that path. No line it or the live script prints carries anything derived from a password or secret.
 
 The library reads every certificate in that file. The self-signed ones are the trust anchors and the others are intermediates the server's chain may be built through; a file with no self-signed certificate trusts every certificate in it, as a one-certificate file always did. The metadata fetch and the Shared Signals receiver both use it. The server's certificate must also name the host in the URL: a DNS name must match a DNS SAN and an IP literal such as `127.0.0.1` an IP address SAN. A certificate that chains to the file but names another host is refused.
 
