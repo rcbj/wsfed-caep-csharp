@@ -1,0 +1,127 @@
+// SPDX-FileCopyrightText: 2026 Iya CyberSecurity Solutions, LLC
+// SPDX-License-Identifier: MIT
+
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+
+namespace IyaSec.WsFed;
+
+sealed class TlsMaterial
+{
+    public string? Ca { get; init; }
+    public string? Cert { get; init; }
+    public string? Key { get; init; }
+}
+
+sealed class HttpResult
+{
+    public int Status { get; init; }
+    public string ContentType { get; init; } = "";
+    public string Body { get; init; } = "";
+}
+
+static class HttpSend
+{
+    public const int MaxBytes = 2 * 1024 * 1024;
+
+    public static HttpResult Send(string url, string? method, IDictionary<string, string>? headers, string? body, TlsMaterial? tls, string code)
+    {
+        method ??= "GET";
+        if (!url.StartsWith("https://", StringComparison.Ordinal) && !url.StartsWith("http://", StringComparison.Ordinal))
+            throw new WsFedException(code, url + " is not an http(s) URL");
+        using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        if (url.StartsWith("https://", StringComparison.Ordinal))
+        {
+            X509Certificate2? ca = null;
+            if (!string.IsNullOrEmpty(tls?.Ca))
+            {
+                try { ca = X509Certificate2.CreateFromPem(tls!.Ca); }
+                catch { throw new WsFedException(code, url + ": the CA certificate cannot be read"); }
+            }
+            if (!string.IsNullOrEmpty(tls?.Cert) && !string.IsNullOrEmpty(tls?.Key))
+            {
+                try
+                {
+                    var clientCert = X509Certificate2.CreateFromPem(tls!.Cert, tls.Key);
+                    handler.ClientCertificates.Add(clientCert);
+                }
+                catch (Exception ex) { throw new WsFedException(code, url + ": " + ex.Message, ex); }
+            }
+            if (ca != null)
+            {
+                var trusted = ca;
+                handler.ServerCertificateCustomValidationCallback = (_, cert, _, _) => Trusted(cert, trusted);
+            }
+        }
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
+        using var request = new HttpRequestMessage(new HttpMethod(method), url);
+        if (headers != null)
+        {
+            foreach (var pair in headers)
+            {
+                if (pair.Key.Equals("content-type", StringComparison.OrdinalIgnoreCase) ||
+                    pair.Key.Equals("content-length", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                request.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
+            }
+        }
+        if (body != null)
+        {
+            var content = new StringContent(body);
+            if (request.Content != null)
+            {
+                foreach (var header in request.Content.Headers)
+                    content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+            request.Content = content;
+            content.Headers.ContentType = null;
+            if (headers != null && headers.TryGetValue("content-type", out var ctype))
+                content.Headers.TryAddWithoutValidation("content-type", ctype);
+            else if (headers != null)
+            {
+                foreach (var pair in headers)
+                    if (pair.Key.Equals("content-type", StringComparison.OrdinalIgnoreCase))
+                        content.Headers.TryAddWithoutValidation(pair.Key, pair.Value);
+            }
+        }
+        HttpResponseMessage response;
+        try { response = client.Send(request, HttpCompletionOption.ResponseHeadersRead); }
+        catch (Exception ex)
+        {
+            var text = ex.ToString();
+            if (text.Contains("Timeout", StringComparison.OrdinalIgnoreCase) || text.Contains("timed out", StringComparison.OrdinalIgnoreCase) || ex is TaskCanceledException)
+                throw new WsFedException(code, url + " did not answer within 15 s", ex);
+            throw new WsFedException(code, url + ": " + ex.Message, ex);
+        }
+        using (response)
+        {
+            var stream = response.Content.ReadAsStream();
+            var buffer = new byte[8192];
+            using var raw = new MemoryStream();
+            while (true)
+            {
+                int n;
+                try { n = stream.Read(buffer, 0, buffer.Length); }
+                catch (Exception ex) { throw new WsFedException(code, url + ": " + ex.Message, ex); }
+                if (n == 0) break;
+                if (raw.Length + n > MaxBytes)
+                    throw new WsFedException(code, url + " answered more than " + MaxBytes + " bytes");
+                raw.Write(buffer, 0, n);
+            }
+            var type = response.Content.Headers.ContentType?.ToString() ?? "";
+            return new HttpResult { Status = (int)response.StatusCode, ContentType = type, Body = System.Text.Encoding.UTF8.GetString(raw.ToArray()) };
+        }
+    }
+
+    static bool Trusted(X509Certificate? cert, X509Certificate2 ca)
+    {
+        if (cert == null) return false;
+        using var leaf = new X509Certificate2(cert);
+        using var chain = new X509Chain();
+        chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+        chain.ChainPolicy.CustomTrustStore.Add(ca);
+        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        return chain.Build(leaf);
+    }
+}

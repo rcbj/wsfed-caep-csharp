@@ -1,0 +1,18 @@
+<!--
+SPDX-FileCopyrightText: 2026 Iya CyberSecurity Solutions, LLC
+SPDX-License-Identifier: MIT
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>IyaSec.WsFed</RootNamespace>
+    <AssemblyName>IyaSec.WsFedCaep</AssemblyName>
+    <Version>0.1.0</Version>
+    <Description>WS-Federation relying party</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="9.0.22" />
+  </ItemGroup>
+</Project>

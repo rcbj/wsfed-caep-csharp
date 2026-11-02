@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Iya CyberSecurity Solutions, LLC
+# SPDX-License-Identifier: MIT
+bin/
+obj/
+demo/generated/
+.idea/
+*.user
+*.suo
+__pycache__/
+*.pyc
+venv/
+.venv/
