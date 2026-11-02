@@ -3,6 +3,7 @@
 
 using System.Net;
 using System.Net.Security;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 namespace IyaSec.WsFed;
@@ -33,10 +34,10 @@ static class HttpSend
         using var handler = new HttpClientHandler { AllowAutoRedirect = false };
         if (url.StartsWith("https://", StringComparison.Ordinal))
         {
-            X509Certificate2? ca = null;
+            X509Certificate2Collection? ca = null;
             if (!string.IsNullOrEmpty(tls?.Ca))
             {
-                try { ca = X509Certificate2.CreateFromPem(tls!.Ca); }
+                try { ca = TrustStore(tls!.Ca); }
                 catch { throw new WsFedException(code, url + ": the CA certificate cannot be read"); }
             }
             if (!string.IsNullOrEmpty(tls?.Cert) && !string.IsNullOrEmpty(tls?.Key))
@@ -114,13 +115,35 @@ static class HttpSend
         }
     }
 
-    static bool Trusted(X509Certificate? cert, X509Certificate2 ca)
+    // idpCa may be one certificate or a whole trust chain: iya-sts publishes its
+    // listener chain (leaf, TLS issuing CA, intermediate, root) and the setup
+    // script saves all of it. Every PEM block is read. The self-signed ones are
+    // the trust anchors and the rest are intermediates the chain may be built
+    // through. A file with no self-signed certificate keeps the old meaning:
+    // every certificate in it is an anchor.
+    internal static X509Certificate2Collection TrustStore(string pem)
+    {
+        var all = new X509Certificate2Collection();
+        all.ImportFromPem(pem);
+        if (all.Count == 0) throw new CryptographicException("no certificate");
+        return all;
+    }
+
+    static bool SelfSigned(X509Certificate2 cert) => cert.SubjectName.RawData.AsSpan().SequenceEqual(cert.IssuerName.RawData);
+
+    internal static bool Trusted(X509Certificate? cert, X509Certificate2Collection ca)
     {
         if (cert == null) return false;
         using var leaf = new X509Certificate2(cert);
         using var chain = new X509Chain();
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-        chain.ChainPolicy.CustomTrustStore.Add(ca);
+        var anchors = ca.Where(SelfSigned).ToList();
+        if (anchors.Count == 0) anchors = ca.ToList();
+        foreach (var item in ca)
+        {
+            if (anchors.Contains(item)) chain.ChainPolicy.CustomTrustStore.Add(item);
+            else chain.ChainPolicy.ExtraStore.Add(item);
+        }
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
         return chain.Build(leaf);
     }

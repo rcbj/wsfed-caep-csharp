@@ -12,6 +12,15 @@ ADMIN_API_CLIENT_SECRET or STS_ADMIN_API_CLIENT_SECRET and a reachable identity 
 A loopback realm and reply URL follow the port the demo listens on. The container's PORT wins over
 the shell PORT. An explicit --public-url or PUBLIC_URL replaces the origin and keeps the path.
 ``signals: false`` skips Shared Signals registration even when an ssf block is present.
+
+idpCa names the file (default demo/generated/idp-ca.pem) that holds iya-sts's TLS listener CA
+trust chain. Every run writes the whole chain there: what GET /tls/server-certificate answers (leaf,
+TLS issuing CA, intermediate, root), or the chain the TLS handshake presents when that path is
+missing. The demo Dockerfile copies that file into the image, so build the demo image after this
+script, and again after running it against a different iya-sts.
+
+This script imports only the standard library (and scripts/trust_chain.py beside it). It never
+builds anything: the .NET SDK does not run on the host.
 """
 
 from __future__ import annotations
@@ -24,6 +33,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from trust_chain import save_trust_chain  # noqa: E402
 
 LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 MULTIPLE_ACCOUNTS = {"key": "authn.multipleAccounts", "value": True}
@@ -214,7 +226,7 @@ def ssf_calls(files: dict, base: str, certificate_pem: str) -> list[dict]:
 def plan_for(files: dict, base: str, test_user: str) -> list[dict]:
     calls = [
         {"method": "POST", "path": f"{base}/admin-api/applications/create", "why": f"register the relying party {files['realm']}",
-         "body": {"identifier": files["realm"], "name": "wsfed-caep-nodejs demo", "protocols": ["wsfed"],
+         "body": {"identifier": files["realm"], "name": "wsfed-caep-csharp demo", "protocols": ["wsfed"],
                   "fields": {"wsfedRealm": [files["realm"]], "wsfedReplyUrl": [files["reply_url"]]}}},
         {"method": "POST", "path": f"{base}/admin-api/applications/add", "why": "(only if it already exists) register the reply URL on it",
          "body": {"application": files["realm"], "attribute": "wsfedReplyUrl", "value": files["reply_url"]}},
@@ -249,17 +261,10 @@ def _metadata_xml(realm: str, reply_url: str) -> str:
 
 
 def metadata_for(config_path: str, realm: str, reply_url: str) -> str:
-    raw = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    raw.pop("idpCa", None)
-    raw["realm"] = realm
-    raw["replyUrl"] = reply_url
-    try:
-        from wsfed_caep.config import resolve_config
-        from wsfed_caep.relying_party import RelyingParty
-
-        return RelyingParty(resolve_config(raw, str(Path(config_path).resolve().parent)), None).metadata()
-    except ImportError:
-        return _metadata_xml(realm, reply_url)
+    # Standard library only. There is no Python wsfed_caep package in this repository; the
+    # demo serves its own full metadata (with its certificate) at
+    # /FederationMetadata/2007-06/FederationMetadata.xml, and `wsfed-caep metadata` writes it.
+    return _metadata_xml(realm, reply_url)
 
 
 def container_port(cwd: str | None = None) -> str | None:
@@ -309,12 +314,39 @@ def _errors_of(body: dict) -> list[str]:
     return [str(item) for item in (body.get("errors") or [])]
 
 
+GENERATE_IN_IMAGE = (
+    '  docker build -t wsfed-caep-csharp-demo .\n'
+    '  docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/demo/generated:/app/demo/generated" '
+    'wsfed-caep-csharp-demo wsfed-caep generate-keys --config demo/wsfed.json'
+)
+
+
 def _generate_keys(config_path: str) -> None:
-    try:
-        from wsfed_caep.cli import main as cli_main
-    except ImportError as err:
-        raise SystemExit("generate-keys needs the wsfed-caep package on PYTHONPATH (pip install -e .) or the Java CLI") from err
-    cli_main(["generate-keys", "--config", config_path])
+    """Run this library's `wsfed-caep generate-keys`. It is on PATH in the demo image.
+
+    The .NET SDK does not run on the host. There, generate the key pair inside the demo image first.
+    """
+    import shutil
+    import subprocess
+
+    binary = shutil.which("wsfed-caep")
+    if not binary:
+        raise SystemExit("No key pair yet, and wsfed-caep is not on PATH. Generate one inside the demo image:\n" + GENERATE_IN_IMAGE)
+    completed = subprocess.run([binary, "generate-keys", "--config", config_path], check=False)
+    if completed.returncode != 0:
+        raise SystemExit(f"wsfed-caep generate-keys exited {completed.returncode}")
+
+
+def save_idp_ca(origin: str, dest: str) -> str:
+    """Write iya-sts's whole TLS listener CA trust chain to dest (idpCa) and return it as PEM."""
+    chain = save_trust_chain(origin, dest)
+    subject = chain["anchor"].subject.rfc4514_string().replace("\n", ", ")
+    print(f"Saved {origin}'s listener CA trust chain ({chain['count']} certificate(s)) to {dest}")
+    print(f"  trust anchor {subject}")
+    print(f"  sha256 {chain['fingerprint']}")
+    print("  Compare the anchor with the Root CA on iya-sts's Server configuration, PKI page.")
+    print("  The demo image carries this file from build time: rebuild it now.")
+    return chain["pem"]
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -323,7 +355,7 @@ def main(argv: list[str] | None = None) -> None:
         print(usage())
         return
     files = files_of(args["config"])
-    port = demo_port(os.environ.get("PORT"), container_port())
+    port = None if args["public_url_given"] else demo_port(os.environ.get("PORT"), container_port())
     endpoints = endpoints_for(files["realm"], files["reply_url"], {"public_url": args["public_url"], "public_url_given": args["public_url_given"], "port": port})
     files["realm"] = endpoints["realm"]
     files["reply_url"] = endpoints["reply_url"]
@@ -332,8 +364,8 @@ def main(argv: list[str] | None = None) -> None:
     if args["dry_run"]:
         if not Path(files["key"]).exists():
             print(f"# would generate the key pair {files['key']}, {files['cert']}")
-        if files["idp_ca"] and not Path(files["idp_ca"]).exists():
-            print(f"# would save {origin}'s TLS root to {files['idp_ca']}")
+        if files["idp_ca"]:
+            print(f"# would save {origin}'s listener CA trust chain to {files['idp_ca']}")
         print(f"# would write {files['rp_metadata']}")
         for call in plan_for(files, base, args["test_user"]):
             print(f"{call['method']} {call['path']}  # {call['why']}")
@@ -345,13 +377,7 @@ def main(argv: list[str] | None = None) -> None:
         _generate_keys(args["config"])
     ca = None
     if files["idp_ca"]:
-        if not Path(files["idp_ca"]).exists():
-            root = _fetch_tls_root(origin)
-            Path(files["idp_ca"]).parent.mkdir(parents=True, exist_ok=True)
-            Path(files["idp_ca"]).write_text(root, encoding="utf-8")
-            print(f"Saved {origin}'s TLS root to {files['idp_ca']} (trusted on first use).")
-            print("  Compare it with the Root CA on iya-sts's Server configuration, PKI page.")
-        ca = Path(files["idp_ca"]).read_text(encoding="utf-8")
+        ca = save_idp_ca(origin, files["idp_ca"])
     xml = metadata_for(args["config"], files["realm"], files["reply_url"])
     Path(files["rp_metadata"]).parent.mkdir(parents=True, exist_ok=True)
     Path(files["rp_metadata"]).write_text(xml, encoding="utf-8")
@@ -399,7 +425,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Saved the IdP metadata to {files['idp_metadata']}")
     if args["test_user"]:
         _ensure_user(base, ca, token, args["test_user"], api)
-    print("Done. Start the demo with: docker compose up --build")
+    print("Done. Build the demo image (it carries the idpCa chain) and start it: docker compose up --build")
 
 
 def _mint(origin: str, base: str, ca: str | None, secret: str) -> str:
@@ -432,24 +458,6 @@ def _ensure_user(base: str, ca: str | None, token: str, username: str, api) -> N
         print(f"Created user {username}.")
         if made["body"].get("password"):
             print(f"Generated password for {username} (shown once): {made['body']['password']}")
-
-
-def _fetch_tls_root(origin: str) -> str:
-    import socket
-
-    parsed = urllib.parse.urlsplit(origin)
-    host = parsed.hostname or ""
-    port = parsed.port or 443
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    with socket.create_connection((host, port), timeout=15) as sock:
-        with context.wrap_socket(sock, server_hostname=host) as tls:
-            chain = getattr(tls._sslobj, "get_unverified_chain", lambda: None)()
-            der = chain[-1] if chain else tls.getpeercert(True)
-    pem_body = __import__("base64").b64encode(der if isinstance(der, (bytes, bytearray)) else bytes(der)).decode()
-    lines = [pem_body[i:i + 64] for i in range(0, len(pem_body), 64)]
-    return "-----BEGIN CERTIFICATE-----\n" + "\n".join(lines) + "\n-----END CERTIFICATE-----\n"
 
 
 if __name__ == "__main__":
