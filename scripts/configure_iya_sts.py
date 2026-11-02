@@ -287,6 +287,7 @@ def _request(url: str, method: str = "GET", headers: dict | None = None, body: b
     context = None
     if url.startswith("https"):
         context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         if ca:
             context.load_verify_locations(cadata=ca)
     req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)

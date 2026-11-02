@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT
 
 Server-side WS-Federation relying party for C#. It accepts SAML 2.0 bearer assertions, reads identity-provider federation metadata, writes relying-party metadata, verifies XML signatures, decrypts encrypted assertions, and remembers assertion ids so a bearer token cannot be replayed. A Shared Signals poll receiver for CAEP and RISC is included. The relying party does not start that receiver.
 
-Version 0.1.1. License: MIT. Package `IyaSec.WsFedCaep`, namespace `IyaSec.WsFed`, `net8.0`. A pull request merged into `main` publishes the package to nuget.org after the test workflow succeeds on that commit. A direct push does not. The key comes from nuget.org Trusted Publishing (`NuGet/login` trades the workflow's GitHub OIDC token for a one-hour API key); the `NUGET_USER` repository secret is the nuget.org profile name that owns the policy for this repository and `publish.yml`. A version already on nuget.org stays there; the next release is a new `Version` in the library's `.csproj`. `develop` and `main` are the same commit when this tree is published; nothing here creates a remote.
+Version 0.1.2. License: MIT. Package `IyaSec.WsFedCaep`, namespace `IyaSec.WsFed`, `net8.0`. A pull request merged into `main` publishes the package to nuget.org after the test workflow succeeds on that commit. A direct push does not. The key comes from nuget.org Trusted Publishing (`NuGet/login` trades the workflow's GitHub OIDC token for a one-hour API key); the `NUGET_USER` repository secret is the nuget.org profile name that owns the policy for this repository and `publish.yml`. A version already on nuget.org stays there; the next release is a new `Version` in the library's `.csproj`. `develop` and `main` are the same commit when this tree is published; nothing here creates a remote.
 
 ## Usage
 
@@ -44,13 +44,13 @@ docker build --target test .
 
 The suite runs in a container.
 
-`dotnet test` covers the stub IdP (a signed SAML assertion the library accepts), replay, metadata, the self-signed certificate, the SSF poll receiver, the setup script's signals behavior, the setup script writing the whole trust chain where `idpCa` points, the library taking that file as its trust store (and refusing a chain from another root), the demo handler, and `GET /live-status`. No live iya-sts.
+`dotnet test` covers the stub IdP (a signed SAML assertion the library accepts), replay, metadata, the self-signed certificate, the SSF poll receiver, the setup script's signals behavior, the setup script writing the whole trust chain where `idpCa` points, the library taking that file as its trust store (and refusing a chain from another root, or a certificate that chains to it but names another host), the demo handler, and `GET /live-status`. No live iya-sts.
 
 ## The iya-sts TLS trust chain (`idpCa`)
 
 `idpCa` names the file that holds the iya-sts TLS listener CA trust chain; the demo's is `generated/idp-ca.pem` (relative to `demo/`). `scripts/configure_iya_sts.py`, the install script, writes it on every run: the whole chain iya-sts publishes at `GET /tls/server-certificate` (leaf, TLS issuing CA, intermediate, root), or the chain the TLS handshake presents when that path is missing. It prints the path, the trust anchor's subject and its SHA-256 fingerprint. `scripts/trust_chain.py --config demo/wsfed.json --idp https://host:port` refreshes the file by itself.
 
-The library reads every certificate in that file. The self-signed ones are the trust anchors and the others are intermediates the server's chain may be built through; a file with no self-signed certificate trusts every certificate in it, as a one-certificate file always did. The metadata fetch and the Shared Signals receiver both use it.
+The library reads every certificate in that file. The self-signed ones are the trust anchors and the others are intermediates the server's chain may be built through; a file with no self-signed certificate trusts every certificate in it, as a one-certificate file always did. The metadata fetch and the Shared Signals receiver both use it. The server's certificate must also name the host in the URL: a DNS name must match a DNS SAN and an IP literal such as `127.0.0.1` an IP address SAN. A certificate that chains to the file but names another host is refused.
 
 The demo image carries the file from build time: the Dockerfile copies `demo/` after the build, and `.dockerignore` admits only `demo/generated/idp-ca.pem` from `demo/generated` (no keys, no metadata). A build before the install script has run (a fresh clone, CI's `--target test`) copies nothing from `demo/generated` and still succeeds. Run the install script, then build the demo image; after running it against a different iya-sts, rebuild.
 
