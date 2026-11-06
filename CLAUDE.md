@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # wsfed-caep
 
-C# port of the server-side WS-Federation relying party. Package `IyaSec.WsFedCaep`, namespace `IyaSec.WsFed`, target `net8.0`. Version 0.1.3. License MIT (`LICENSE`). A pull request merged into `main` publishes the package to nuget.org after the test workflow succeeds on that commit. A direct push does not. The key comes from nuget.org Trusted Publishing (`NuGet/login` trades the workflow's GitHub OIDC token for a one-hour API key); the `NUGET_USER` repository secret is the nuget.org profile name that owns the policy for this repository and `publish.yml`. A version already on nuget.org stays there; the next release is a new `Version` in the library's `.csproj`. When this tree is published, `develop` and `main` are the same commit.
+C# port of the server-side WS-Federation relying party. Package `IyaSec.WsFedCaep`, namespace `IyaSec.WsFed`, target `net10.0`. Version 0.1.3. License MIT (`LICENSE`). A pull request merged into `main` publishes the package to nuget.org after the test workflow succeeds on that commit. A direct push does not. The key comes from nuget.org Trusted Publishing (`NuGet/login` trades the workflow's GitHub OIDC token for a one-hour API key); the `NUGET_USER` repository secret is the nuget.org profile name that owns the policy for this repository and `publish.yml`. A version already on nuget.org stays there; the next release is a new `Version` in the library's `.csproj`. When this tree is published, `develop` and `main` are the same commit.
 
 ## Usage
 
@@ -25,7 +25,7 @@ Omitted or `true` means on. The resolved configuration leaves `SignalsSet` false
 docker build --target test .
 ```
 
-The `test` stage runs `dotnet test --nologo` in `mcr.microsoft.com/dotnet/sdk:8.0`. GitHub Actions uses that command. Do not run the .NET SDK on the host. The demo image does not run the suite.
+The `test` stage runs `dotnet test --nologo` in `mcr.microsoft.com/dotnet/sdk:10.0`. GitHub Actions uses that command. Do not run the .NET SDK on the host. The demo image does not run the suite.
 
 The suite covers the stub IdP (a signed SAML assertion the library accepts), replay, metadata, the self-signed certificate, the SSF poll receiver, the setup script's signals behavior, the trust chain (`TrustChainTests`: the script writes all four certificates where `idpCa` points, and the library builds a leaf-only server chain through that file's intermediates, and refuses a certificate that chains to it but names another host), the demo handler, and `GET /live-status` (`LiveStatusTests`). No live iya-sts. XML signatures use `System.Security.Cryptography.Xml.SignedXml` with exclusive canonicalization and RSA-SHA256. This tree does not wrap another WS-Federation relying party.
 
@@ -45,7 +45,7 @@ The install script never prints a generated test-user password: it writes it to 
 
 ## Layout
 
-`src/IyaSec.WsFedCaep/` library. `demo/` handler and `demo/IyaSec.WsFed.Demo`. `src/IyaSec.WsFed.Cli`. `scripts/configure_iya_sts.py` registers the demo with iya-sts and writes the `idpCa` chain; the container `PORT` wins over the shell `PORT`, and an explicit public URL wins over both. `scripts/live_iya_sts.py` is the live sign-in. `Dockerfile` builds in an SDK stage and runs on `dotnet/runtime:8.0`; and comment-free `docker-compose.yml` use `network_mode: host`, `ENV PORT=3000`, and a health check of `http://127.0.0.1:${PORT}/healthz`.
+`src/IyaSec.WsFedCaep/` library. `demo/` handler and `demo/IyaSec.WsFed.Demo`. `src/IyaSec.WsFed.Cli`. `scripts/configure_iya_sts.py` registers the demo with iya-sts and writes the `idpCa` chain; the container `PORT` wins over the shell `PORT`, and an explicit public URL wins over both. `scripts/live_iya_sts.py` is the live sign-in. `Dockerfile` builds in an SDK stage and runs on `dotnet/runtime:10.0`; and comment-free `docker-compose.yml` use `network_mode: host`, `ENV PORT=3000`, and a health check of `http://127.0.0.1:${PORT}/healthz`.
 
 ## Demo
 
