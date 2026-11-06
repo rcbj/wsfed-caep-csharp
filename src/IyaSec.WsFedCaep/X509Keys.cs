@@ -53,7 +53,7 @@ public static class X509Keys
         var hashed = SHA256.HashData(tbs);
         var signature = privateKey.SignHash(hashed, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var der = Seq(tbs, sha256Rsa, Tlv(0x03, Join(new byte[] { 0 }, signature)));
-        var certificate = new X509Certificate2(der);
+        var certificate = X509CertificateLoader.LoadCertificate(der);
         var keyPem = new string(PemEncoding.Write("PRIVATE KEY", privateKey.ExportPkcs8PrivateKey()));
         var certPem = new string(PemEncoding.Write("CERTIFICATE", der));
         return new KeyPair { PrivateKeyPem = keyPem + "\n", CertificatePem = certPem + "\n", Certificate = certificate, PrivateKey = privateKey };
